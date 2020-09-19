@@ -42,16 +42,24 @@ ghc-options:
     - -Wredundant-constraints
     - -O2
 
+default-extensions:
+    - OverloadedStrings
+    - LambdaCase
+    - NamedFieldPuns
+
 
 dependencies:
     - base >= 4.7 && < 5
+    - amazonka-cloudwatch-logs
+    - lens
+    - text
 
 
 library:
     source-dirs:
         src
     dependencies:
-        []
+        - amazonka
 
 executables:
     cloudwatcher:
@@ -65,6 +73,9 @@ executables:
             - -with-rtsopts "-N -T"
         dependencies:
             - cloudwatcher
+            - brick
+            - vty
+            - vector
 
 tests:
     cloudwatcher-test:
