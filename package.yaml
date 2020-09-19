@@ -1,0 +1,83 @@
+---
+
+name:
+    cloudwatcher
+version:
+    0.1.0.0
+github:
+    prikhi/cloudwatcher
+homepage:
+    https://github.com/prikhi/cloudwatcher#readme
+license:
+    BSD3
+license-file:
+    LICENSE
+author:
+    Pavan Rikhi
+maintainer:
+    pavan.rikhi@gmail.com
+copyright:
+    2020 Pavan Rikhi
+category:
+    Web
+extra-source-files:
+    - README.md
+    - CHANGELOG.md
+
+
+synopsis:
+    Short, one-line summary of project here.
+
+description: |
+    Longer description of package here.
+
+    Maybe include a simple usage example.
+
+
+ghc-options:
+    - -Wall
+    - -Wcompat
+    - -Wincomplete-record-updates
+    - -Wincomplete-uni-patterns
+    - -Wredundant-constraints
+    - -O2
+
+
+dependencies:
+    - base >= 4.7 && < 5
+
+
+library:
+    source-dirs:
+        src
+    dependencies:
+        []
+
+executables:
+    cloudwatcher:
+        source-dirs:
+            app
+        main:
+            Main.hs
+        ghc-options:
+            - -threaded
+            - -rtsopts
+            - -with-rtsopts "-N -T"
+        dependencies:
+            - cloudwatcher
+
+tests:
+    cloudwatcher-test:
+        main: Spec.hs
+        source-dirs:
+            tests
+        ghc-options:
+            - -threaded
+            - -rtsopts
+            - -with-rtsopts "-N -T"
+        dependencies:
+            - cloudwatcher
+            - hedgehog
+            - tasty
+            - tasty-hedgehog
+            - tasty-hunit
