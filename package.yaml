@@ -74,9 +74,11 @@ executables:
             - -with-rtsopts "-N -T"
         dependencies:
             - cloudwatcher
+            - async
             - brick
             - vty
             - vector
+            - stm
 
 tests:
     cloudwatcher-test:
