@@ -53,6 +53,7 @@ dependencies:
     - amazonka-cloudwatch-logs
     - lens
     - text
+    - time
 
 
 library:
