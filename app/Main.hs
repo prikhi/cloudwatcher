@@ -19,6 +19,8 @@ import           Control.Monad                  ( void
                                                 , forever
                                                 )
 import           Control.Monad.IO.Class         ( liftIO )
+import           Data.Bitraversable             ( bisequence )
+import           Data.List.NonEmpty             ( nonEmpty )
 import           Data.Maybe                     ( fromMaybe )
 import           Data.Time
 import           Graphics.Vty.Attributes        ( defAttr
@@ -41,6 +43,7 @@ import           Lib
 
 import qualified Data.List                     as L
 import qualified Data.Ord                      as O
+import qualified Data.Text                     as T
 import qualified Data.Vector                   as V
 
 
@@ -64,16 +67,19 @@ main = do
 data AppEvent
     = SetLogStreams [LogStream]
     | SetLogEvents [FilteredLogEvent]
+    | SetEventContext [FilteredLogEvent]
 
 data QueueEvent
     = GetLogStreams LogGroup
     | GetLogEvents LogGroup
+    | GetEventContext LogGroup FilteredLogEvent
 
 data AppState =
     AppState
         { lgList :: LogGroupList
         , lsList :: Maybe LogStreamList
         , leList :: Maybe LogEventList
+        , ecList :: Maybe LogEventList
         , focusedPane :: AppWidget
         , asyncQueue :: TQueue QueueEvent
         }
@@ -85,6 +91,7 @@ initialState = do
     return $ AppState { lgList      = lgl
                       , lsList      = Nothing
                       , leList      = Nothing
+                      , ecList      = Nothing
                       , focusedPane = LogGroupWidget
                       , asyncQueue  = q
                       }
@@ -93,6 +100,7 @@ data AppWidget
     = LogGroupWidget
     | LogStreamWidget
     | LogEventWidget
+    | EventContextWidget
     deriving (Eq, Ord, Show)
 
 handleEvent
@@ -116,12 +124,23 @@ handleEvent s@AppState {..} = \case
             Just leList_ -> do
                 newLEList <- handleListEventVi handleListEvent e leList_
                 continue s { leList = Just newLEList }
+        (EventContextWidget, _) -> case ecList of
+            Nothing      -> continue s
+            Just ecList_ -> do
+                newECList <- handleListEventVi handleListEvent e ecList_
+                continue s { ecList = Just newECList }
+
     AppEvent e -> case e of
         SetLogStreams ls -> continue s { lsList = Just $ logStreamList ls }
         SetLogEvents  le -> continue s
-            { leList = Just $ logEventList $ L.sortOn
+            { leList = Just $ logEventList LogEventWidget $ L.sortOn
                            (O.Down . (^. fleTimestamp))
                            le
+            }
+        SetEventContext ec -> continue s
+            { ecList = Just $ logEventList EventContextWidget $ L.sortOn
+                           (O.Down . (^. fleTimestamp))
+                           ec
             }
     _ -> continue s
   where
@@ -132,12 +151,29 @@ handleEvent s@AppState {..} = \case
             Just (_, lg) ->
                 liftIO (atomically $ writeTQueue asyncQueue (GetLogEvents lg))
                     >> continue s { focusedPane = LogEventWidget }
+        LogEventWidget ->
+            case
+                    bisequence
+                        ( leList >>= listSelectedElement
+                        , listSelectedElement lgList
+                        )
+                of
+                    Nothing -> continue s
+                    Just ((_, le), (_, lg)) ->
+                        liftIO
+                                (atomically $ writeTQueue
+                                    asyncQueue
+                                    (GetEventContext lg le)
+                                )
+                            >> continue s { focusedPane = EventContextWidget }
         _ -> continue s
     goBack :: EventM AppWidget (Next AppState)
     goBack = case focusedPane of
         LogGroupWidget  -> continue s
         LogStreamWidget -> toLogGroupPane
         LogEventWidget  -> toLogGroupPane
+        EventContextWidget ->
+            continue s { ecList = Nothing, focusedPane = LogEventWidget }
     toLogGroupPane :: EventM AppWidget (Next AppState)
     toLogGroupPane = continue s { lsList      = Nothing
                                 , leList      = Nothing
@@ -160,6 +196,12 @@ handleWorker brickQueue = \case
             getLogEvents lgName 100 (start, end) "\" 500 - \""
                 >>= writeBChan brickQueue
                 .   SetLogEvents
+    GetEventContext lg fle -> case lg ^. lgLogGroupName of
+        Nothing -> return ()
+        Just lgName ->
+            getEventContext lgName fle 15
+                >>= writeBChan brickQueue
+                .   SetEventContext
 
 app :: App AppState AppEvent AppWidget
 app = App
@@ -183,25 +225,55 @@ render st = [body st]
 
 body :: AppState -> Widget AppWidget
 body st =
-    hBox
-        $  [ renderLogGroupList (focused == LogGroupWidget) $ lgList st
-           , padLeftRight 1 vBorder
-           ]
-        <> streamPanes
+    vBox
+        $ hBox
+              ( hLimit
+                    maxLogNameLength
+                    ( label "Log Groups"
+                    $ renderLogGroupList (focused == LogGroupWidget)
+                    $ lgList st
+                    )
+              : padLeftRight 1 vBorder
+              : mainPanes
+              )
+        : contextPane
+
   where
     focused :: AppWidget
     focused = focusedPane st
-    streamPanes :: [Widget AppWidget]
-    streamPanes = case (focused, lsList st, leList st) of
-        (LogGroupWidget , _      , _) -> [center $ txt "Select a Log Group"]
-        (LogStreamWidget, Nothing, _) -> [center $ txt "Loading Log Streams"]
+    maxLogNameLength :: Int
+    maxLogNameLength =
+        let nameLengths =
+                    fmap (T.length . fromMaybe "" . (^. lgLogGroupName))
+                        <$> nonEmpty (V.toList $ listElements $ lgList st)
+        in  maybe 20 maximum nameLengths
+    mainPanes :: [Widget AppWidget]
+    mainPanes = case (focused, lsList st, leList st) of
+        (LogGroupWidget, _, _) ->
+            [label "Events" $ center $ txt "Select a Log Group"]
+        (LogStreamWidget, Nothing, _) ->
+            [label "Streams" $ center $ txt "Loading Log Streams"]
         (LogStreamWidget, Just ls, _) ->
-            [ renderLogStreamList True ls
+            [ label "Streams" $ renderLogStreamList True ls
             , vBorder
             , center $ txt "Select a Log Stream"
             ]
-        (LogEventWidget, _, Just le) -> [renderLogEventList True le]
-        (LogEventWidget, _, Nothing) -> [center $ txt "Loading Log Events"]
+        (LogEventWidget, _, Just le) ->
+            [label "Events" $ renderLogEventList True le]
+        (LogEventWidget, _, Nothing) ->
+            [label "Events" $ center $ txt "Loading Log Events"]
+        (EventContextWidget, _, Just le) ->
+            [label "Events" $ renderLogEventList False le]
+        (EventContextWidget, _, _) -> []
+    contextPane = case (focused, leList st, ecList st) of
+        (LogEventWidget, Just _, Nothing) ->
+            [vLimit 16 $ label "Context" $ center $ txt "Select an Event"]
+        (EventContextWidget, Just _, Nothing) ->
+            [vLimit 16 $ label "Context" $ center $ txt "Loading Event Context"]
+        (_, Just _, Just ec) ->
+            [label "Context" $ vLimit 15 $ renderLogEventList True ec]
+        _ -> []
+    label l w = vBox [hBorderWithLabel $ padLeftRight 1 $ txt l, w]
 
 
 
@@ -239,8 +311,8 @@ renderLogStreamList = renderList renderLogStream
 
 type LogEventList = GenericList AppWidget V.Vector FilteredLogEvent
 
-logEventList :: [FilteredLogEvent] -> LogEventList
-logEventList les = list LogEventWidget (V.fromList les) 1
+logEventList :: AppWidget -> [FilteredLogEvent] -> LogEventList
+logEventList w les = list w (V.fromList les) 1
 
 renderLogEventList :: Bool -> LogEventList -> Widget AppWidget
 renderLogEventList = renderList renderLogEvent
