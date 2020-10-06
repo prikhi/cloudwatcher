@@ -2,10 +2,12 @@ module Lib
     ( getLogGroups
     , getLogStreams
     , Lib.getLogEvents
+    , getEventContext
     )
 where
 
 import           Control.Lens
+import           Data.List.NonEmpty             ( NonEmpty((:|)) )
 import           Data.Text                      ( Text )
 import           Data.Time
 import           Data.Time.Clock.POSIX
@@ -56,6 +58,33 @@ getLogEvents lgName limit (start, end) filterText =
   where
     toTimestamp :: UTCTime -> Natural
     toTimestamp = (1000 *) . floor . utcTimeToPOSIXSeconds
+
+getEventContext :: Text -> FilteredLogEvent -> Int -> IO [FilteredLogEvent]
+getEventContext groupName event prevLines = case event ^. fleTimestamp of
+    Just end ->
+        let start = end - (3 * 1000)
+        in
+            reverse
+            .   take (prevLines + 1)
+            .   reverse
+            <$> collectPaginatedResponses
+                    (PaginationConfig
+                        (\t ->
+                            filterLogEvents groupName
+                                & (fleNextToken .~ t)
+                                & (fleLimit ?~ 500)
+                                & (fleLogStreamNames .~ fmap
+                                      (:| [])
+                                      (event ^. fleLogStreamName)
+                                  )
+                                & (fleStartTime ?~ start)
+                                & (fleEndTime ?~ end + 1)
+                        )
+                        (^. flersEvents)
+                        (^. flersNextToken)
+                        500
+                    )
+    Nothing -> return []
 
 
 
