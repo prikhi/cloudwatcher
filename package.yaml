@@ -43,9 +43,10 @@ ghc-options:
     - -O2
 
 default-extensions:
-    - OverloadedStrings
     - LambdaCase
     - NamedFieldPuns
+    - OverloadedStrings
+    - ViewPatterns
 
 
 dependencies:

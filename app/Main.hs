@@ -38,6 +38,8 @@ import           Graphics.Vty.Input.Events      ( Event(..)
                                                 )
 import           Network.AWS.CloudWatchLogs
                                          hiding ( getLogEvents )
+import           System.Environment             ( getArgs )
+import           Text.Read                      ( readMaybe )
 
 import           Lib
 
@@ -49,9 +51,10 @@ import qualified Data.Vector                   as V
 
 main :: IO ()
 main = do
+    lookback   <- getLookbackMinutes
     st         <- initialState
     brickQueue <- newBChan 100
-    withAsync (startWorker brickQueue $ asyncQueue st) $ \_ -> do
+    withAsync (startWorker lookback brickQueue $ asyncQueue st) $ \_ -> do
         vty <- standardIOConfig >>= mkVty
         void $ customMain vty
                           (standardIOConfig >>= mkVty)
@@ -59,10 +62,16 @@ main = do
                           app
                           st
   where
-    startWorker :: BChan AppEvent -> TQueue QueueEvent -> IO ()
-    startWorker bQueue wQueue = forever $ do
+    startWorker :: Integer -> BChan AppEvent -> TQueue QueueEvent -> IO ()
+    startWorker lookback bQueue wQueue = forever $ do
         ev <- atomically $ readTQueue wQueue
-        handleWorker bQueue ev
+        handleWorker lookback bQueue ev
+    -- Use first argument to the exe as the number of minutes to search
+    -- back in the logs
+    getLookbackMinutes :: IO Integer
+    getLookbackMinutes = getArgs <&> \case
+        (readMaybe -> Just m) : _ -> m
+        _                         -> 15
 
 data AppEvent
     = SetLogStreams [LogStream]
@@ -180,8 +189,8 @@ handleEvent s@AppState {..} = \case
                                 , focusedPane = LogGroupWidget
                                 }
 
-handleWorker :: BChan AppEvent -> QueueEvent -> IO ()
-handleWorker brickQueue = \case
+handleWorker :: Integer -> BChan AppEvent -> QueueEvent -> IO ()
+handleWorker logLookbackMin brickQueue = \case
     GetLogStreams lg -> case lg ^. lgLogGroupName of
         Nothing -> return ()
         Just lgName ->
@@ -192,7 +201,9 @@ handleWorker brickQueue = \case
         Nothing     -> return ()
         Just lgName -> do
             end <- getCurrentTime
-            let start = addUTCTime (fromInteger $ -15 * 60) end
+            let start = addUTCTime
+                    (fromInteger $ (-1) * logLookbackMin * 60)
+                    end
             getLogEvents lgName 100 (start, end) "\" 500 - \""
                 >>= writeBChan brickQueue
                 .   SetLogEvents
