@@ -52,9 +52,15 @@ default-extensions:
 dependencies:
     - base >= 4.7 && < 5
     - amazonka-cloudwatch-logs
+    - async
+    - brick
+    - cmdargs
     - lens
+    - stm
     - text
     - time
+    - vector
+    - vty
 
 
 library:
@@ -75,11 +81,6 @@ executables:
             - -with-rtsopts "-N -T"
         dependencies:
             - cloudwatcher
-            - async
-            - brick
-            - vty
-            - vector
-            - stm
 
 tests:
     cloudwatcher-test:
