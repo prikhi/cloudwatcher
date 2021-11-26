@@ -56,6 +56,7 @@ dependencies:
     - brick
     - cmdargs
     - lens
+    - microlens-th
     - stm
     - text
     - time
