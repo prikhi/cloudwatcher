@@ -3,7 +3,7 @@ module Lib.Events
     , WorkerEvent(..)
     ) where
 
-import           Network.AWS.CloudWatchLogs     ( FilteredLogEvent
+import           Amazonka.CloudWatchLogs     ( FilteredLogEvent
                                                 , LogGroup
                                                 , LogStream
                                                 )

@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 module Lib
     ( getLogGroups
     , getLogStreams
@@ -7,37 +8,35 @@ module Lib
 where
 
 import           Control.Lens
+import           Data.Dynamic
 import           Data.List.NonEmpty             ( NonEmpty((:|)) )
 import           Data.Text                      ( Text )
 import           Data.Time
 import           Data.Time.Clock.POSIX
-import           Network.AWS
-import           Network.AWS.CloudWatchLogs
+import           Amazonka
+import           Amazonka.CloudWatchLogs
+import           Amazonka.CloudWatchLogs.DescribeLogGroups
+import           Amazonka.CloudWatchLogs.Lens
 import           Numeric.Natural
 
 
-callAWS :: AWS a -> IO a
-callAWS req = do
-    env <- newEnv Discover
-    runResourceT $ runAWS env req
-
 getLogGroups :: IO [LogGroup]
 getLogGroups = collectPaginatedResponses $ PaginationConfig
-    (\t -> describeLogGroups & dlgNextToken .~ t)
-    (^. dlgrsLogGroups)
-    (^. dlgrsNextToken)
+    (\t -> newDescribeLogGroups & describeLogGroups_nextToken .~ t)
+    (^. describeLogGroupsResponse_logGroups . _Just)
+    (^. describeLogGroupsResponse_nextToken)
     100
 
 getLogStreams :: Text -> Int -> IO [LogStream]
 getLogStreams lgName limit = collectPaginatedResponses $ PaginationConfig
     (\t ->
-        describeLogStreams lgName
-            & (dlssNextToken .~ t)
-            & (dlssOrderBy ?~ LastEventTime)
-            & (dlssDescending ?~ True)
+        newDescribeLogStreams lgName
+            & (describeLogStreams_nextToken .~ t)
+            & (describeLogStreams_orderBy ?~ OrderBy_LastEventTime)
+            & (describeLogStreams_descending ?~ True)
     )
-    (^. dlsrsLogStreams)
-    (^. dlsrsNextToken)
+    (^. describeLogStreamsResponse_logStreams . _Just)
+    (^. describeLogStreamsResponse_nextToken)
     limit
 
 getLogEvents
@@ -45,22 +44,22 @@ getLogEvents
 getLogEvents lgName limit (start, end) filterText =
     collectPaginatedResponses $ PaginationConfig
         (\t ->
-            filterLogEvents lgName
-                & (fleNextToken .~ t)
-                & (fleFilterPattern ?~ filterText)
-                & (fleLimit ?~ limit)
-                & (fleStartTime ?~ toTimestamp start)
-                & (fleEndTime ?~ toTimestamp end)
+            newFilterLogEvents lgName
+                & (filterLogEvents_nextToken .~ t)
+                & (filterLogEvents_filterPattern ?~ filterText)
+                & (filterLogEvents_limit ?~ limit)
+                & (filterLogEvents_startTime ?~ toTimestamp start)
+                & (filterLogEvents_endTime ?~ toTimestamp end)
         )
-        (^. flersEvents)
-        (^. flersNextToken)
+        (^. filterLogEventsResponse_events . _Just)
+        (^. filterLogEventsResponse_nextToken)
         (fromIntegral limit)
   where
     toTimestamp :: UTCTime -> Natural
     toTimestamp = (1000 *) . floor . utcTimeToPOSIXSeconds
 
 getEventContext :: Text -> FilteredLogEvent -> Int -> IO [FilteredLogEvent]
-getEventContext groupName event prevLines = case event ^. fleTimestamp of
+getEventContext groupName event prevLines = case event ^. filteredLogEvent_timestamp of
     Just end ->
         let start = end - (3 * 1000)
         in
@@ -70,18 +69,18 @@ getEventContext groupName event prevLines = case event ^. fleTimestamp of
             <$> collectPaginatedResponses
                     (PaginationConfig
                         (\t ->
-                            filterLogEvents groupName
-                                & (fleNextToken .~ t)
-                                & (fleLimit ?~ 500)
-                                & (fleLogStreamNames .~ fmap
+                            newFilterLogEvents groupName
+                                & (filterLogEvents_nextToken .~ t)
+                                & (filterLogEvents_limit ?~ 500)
+                                & (filterLogEvents_logStreamNames .~ fmap
                                       (:| [])
-                                      (event ^. fleLogStreamName)
+                                      (event ^. filteredLogEvent_logStreamName)
                                   )
-                                & (fleStartTime ?~ start)
-                                & (fleEndTime ?~ end + 1)
+                                & (filterLogEvents_startTime ?~ start)
+                                & (filterLogEvents_endTime ?~ end + 1)
                         )
-                        (^. flersEvents)
-                        (^. flersNextToken)
+                        (^. filterLogEventsResponse_events . _Just)
+                        (^. filterLogEventsResponse_nextToken)
                         500
                     )
     Nothing -> return []
@@ -96,17 +95,18 @@ data PaginationConfig a req resp =
         , lengthLimit :: Int
         }
 
-collectPaginatedResponses
-    :: AWSRequest req => PaginationConfig a req (Rs req) -> IO [a]
-collectPaginatedResponses cfg = callAWS $ go (Right ([], Nothing))
+-- collectPaginatedResponses :: AWSRequest req => PaginationConfig a req (Rs req) -> IO [a]
+collectPaginatedResponses :: (AWSRequest req, Typeable req, Typeable (AWSResponse req)) => PaginationConfig a req (AWSResponse req) -> IO [a]
+collectPaginatedResponses cfg = go (Right ([], Nothing))
   where
     go = \case
         Left  result            -> return result
         Right (acc, mPageToken) -> do
             let req = makeReq cfg mPageToken
-            resp <- send req
+            env <- newEnv discover
+            resp <- runResourceT $ send env req
             let vals = acc <> getVals cfg resp
-            if length vals >= lengthLimit cfg
+            if Prelude.length vals >= lengthLimit cfg
                 then return vals
                 else case getToken cfg resp of
                     Nothing   -> return vals

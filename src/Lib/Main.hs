@@ -20,9 +20,8 @@ import           Control.Monad                  ( forever
                                                 , void
                                                 )
 import           Data.Version                   ( showVersion )
-import           Graphics.Vty                   ( mkVty
-                                                , standardIOConfig
-                                                )
+import           Graphics.Vty.Config            ( defaultConfig )
+import           Graphics.Vty.CrossPlatform     ( mkVty )
 import           System.Console.CmdArgs         ( (&=)
                                                 , Data
                                                 , Typeable
@@ -53,9 +52,9 @@ run Args { lookback } = do
     st         <- initialState
     brickQueue <- newBChan 100
     withAsync (startWorker brickQueue $ asyncQueue st) $ \_ -> do
-        vty <- standardIOConfig >>= mkVty
+        vty <- mkVty defaultConfig
         void $ customMain vty
-                          (standardIOConfig >>= mkVty)
+                          (mkVty defaultConfig)
                           (Just brickQueue)
                           app
                           st
