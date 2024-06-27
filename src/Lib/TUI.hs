@@ -31,8 +31,9 @@ import           Graphics.Vty.Attributes        ( cyan
 import           Graphics.Vty.Input.Events      ( Event(..)
                                                 , Key(..)
                                                 )
-import           Network.AWS.CloudWatchLogs
+import           Amazonka.CloudWatchLogs
                                          hiding ( getLogEvents )
+import           Amazonka.CloudWatchLogs.Lens
 
 import           Lib
 import           Lib.Events
@@ -48,7 +49,7 @@ app = App
     { appDraw         = render
     , appChooseCursor = \_ _ -> Nothing
     , appHandleEvent  = handleEvent
-    , appStartEvent   = return
+    , appStartEvent   = pure ()
     , appAttrMap      = const $ attrMap
                             defAttr
                             [ ( listSelectedFocusedAttr
@@ -74,7 +75,7 @@ data AppState = AppState
 
 initialState :: IO AppState
 initialState = do
-    lgl <- logGroupList . L.sortOn (^. lgLogGroupName) <$> getLogGroups
+    lgl <- logGroupList . L.sortOn (^. logGroup_logGroupName) <$> getLogGroups
     q   <- newTQueueIO
     return $ AppState { lgList      = lgl
                       , lsList      = Nothing
@@ -96,53 +97,56 @@ data AppWidget
 -- UPDATE
 
 handleEvent
-    :: AppState
-    -> BrickEvent AppWidget AppEvent
-    -> EventM AppWidget (Next AppState)
-handleEvent s@AppState {..} = \case
-    VtyEvent (EvKey (KChar 'q') _) -> halt s
+    :: BrickEvent AppWidget AppEvent
+    -> EventM AppWidget AppState ()
+handleEvent be = do
+ AppState {..} <- get
+ case be of
+    VtyEvent (EvKey (KChar 'q') _) -> halt
     VtyEvent (EvKey KEnter      _) -> chooseItem
     VtyEvent (EvKey KEsc        _) -> goBack
     VtyEvent e                     -> case (focusedPane, lsList) of
         (LogGroupWidget, _) -> do
-            newLGList <- handleListEventVi handleListEvent e lgList
-            continue s { lgList = newLGList }
+            (newLGList, _) <- nestEventM lgList $ handleListEventVi handleListEvent e
+            modify $ \s -> s { lgList = newLGList }
         (LogStreamWidget, Just lsList_) -> do
-            newLSList <- handleListEventVi handleListEvent e lsList_
-            continue s { lsList = Just newLSList }
-        (LogStreamWidget, _) -> continue s
+            (newLSList, _) <- nestEventM lsList_ $ handleListEventVi handleListEvent e
+            modify $ \s ->  s { lsList = Just newLSList }
+        (LogStreamWidget, _) -> pure ()
         (LogEventWidget , _) -> case leList of
-            Nothing      -> continue s
+            Nothing      -> pure ()
             Just leList_ -> do
-                newLEList <- handleListEventVi handleListEvent e leList_
-                continue s { leList = Just newLEList }
+              (newLEList, _) <- nestEventM leList_ $ handleListEventVi handleListEvent e
+              modify $ \s -> s { leList = Just newLEList }
         (EventContextWidget, _) -> case ecList of
-            Nothing      -> continue s
+            Nothing      -> pure ()
             Just ecList_ -> do
-                newECList <- handleListEventVi handleListEvent e ecList_
-                continue s { ecList = Just newECList }
+              (newECList, _) <- nestEventM ecList_ $ handleListEventVi handleListEvent e
+              modify $ \s -> s { ecList = Just newECList }
 
     AppEvent e -> case e of
-        SetLogStreams ls -> continue s { lsList = Just $ logStreamList ls }
-        SetLogEvents  le -> continue s
+        SetLogStreams ls -> modify $ \s -> s { lsList = Just $ logStreamList ls }
+        SetLogEvents  le -> modify $ \s -> s
             { leList = Just $ logEventList LogEventWidget $ L.sortOn
-                           (O.Down . (^. fleTimestamp))
+                           (O.Down . (^. filteredLogEvent_timestamp))
                            le
             }
-        SetEventContext ec -> continue s
+        SetEventContext ec -> modify $ \s -> s
             { ecList = Just $ logEventList EventContextWidget $ L.sortOn
-                           (O.Down . (^. fleTimestamp))
+                           (O.Down . (^. filteredLogEvent_timestamp))
                            ec
             }
-    _ -> continue s
+    _ -> pure ()
   where
-    chooseItem :: EventM AppWidget (Next AppState)
-    chooseItem = case focusedPane of
+    chooseItem :: EventM AppWidget AppState ()
+    chooseItem = do
+      AppState {..} <- get
+      case focusedPane of
         LogGroupWidget -> case listSelectedElement lgList of
-            Nothing -> continue s
-            Just (_, lg) ->
-                liftIO (atomically $ writeTQueue asyncQueue (GetLogEvents lg))
-                    >> continue s { focusedPane = LogEventWidget }
+            Nothing -> pure ()
+            Just (_, lg) -> do
+              liftIO (atomically $ writeTQueue asyncQueue (GetLogEvents lg))
+              modify $ \s -> s { focusedPane = LogEventWidget }
         LogEventWidget ->
             case
                     bisequence
@@ -150,27 +154,24 @@ handleEvent s@AppState {..} = \case
                         , listSelectedElement lgList
                         )
                 of
-                    Nothing -> continue s
-                    Just ((_, le), (_, lg)) ->
-                        liftIO
-                                (atomically $ writeTQueue
-                                    asyncQueue
-                                    (GetEventContext lg le)
-                                )
-                            >> continue s { focusedPane = EventContextWidget }
-        _ -> continue s
-    goBack :: EventM AppWidget (Next AppState)
-    goBack = case focusedPane of
-        LogGroupWidget  -> continue s
-        LogStreamWidget -> toLogGroupPane
-        LogEventWidget  -> toLogGroupPane
-        EventContextWidget ->
-            continue s { ecList = Nothing, focusedPane = LogEventWidget }
-    toLogGroupPane :: EventM AppWidget (Next AppState)
-    toLogGroupPane = continue s { lsList      = Nothing
-                                , leList      = Nothing
-                                , focusedPane = LogGroupWidget
-                                }
+                    Nothing -> pure ()
+                    Just ((_, le), (_, lg)) -> do
+                        liftIO $ atomically $ writeTQueue asyncQueue (GetEventContext lg le)
+                        modify $ \s -> s { focusedPane = EventContextWidget }
+        _ -> pure ()
+    goBack :: EventM AppWidget AppState ()
+    goBack = do
+      AppState {..} <- get
+      case focusedPane of
+         LogGroupWidget  -> pure ()
+         LogStreamWidget -> toLogGroupPane
+         LogEventWidget  -> toLogGroupPane
+         EventContextWidget -> modify $ \s -> s { ecList = Nothing, focusedPane = LogEventWidget }
+    toLogGroupPane :: EventM AppWidget AppState ()
+    toLogGroupPane = modify $ \s -> s { lsList      = Nothing
+                                      , leList      = Nothing
+                                      , focusedPane = LogGroupWidget
+                                      }
 
 
 -- RENDER
@@ -199,7 +200,7 @@ body st =
     maxLogNameLength :: Int
     maxLogNameLength =
         let nameLengths =
-                fmap (T.length . fromMaybe "" . (^. lgLogGroupName))
+                fmap (T.length . fromMaybe "" . (^. logGroup_logGroupName))
                     <$> nonEmpty (V.toList $ listElements $ lgList st)
         in  maybe 20 maximum nameLengths
     mainPanes :: [Widget AppWidget]
@@ -242,7 +243,7 @@ renderLogGroupList = renderList renderLogGroup
   where
     renderLogGroup :: Bool -> LogGroup -> Widget AppWidget
     renderLogGroup _ lg =
-        txt . fromMaybe "<unnamed>" $ (lg ^. lgLogGroupName) <|> (lg ^. lgArn)
+        txt . fromMaybe "<unnamed>" $ (lg ^. logGroup_logGroupName) <|> (lg ^. logGroup_arn)
 
 -- LOG STREAM
 
@@ -256,7 +257,7 @@ renderLogStreamList = renderList renderLogStream
   where
     renderLogStream :: Bool -> LogStream -> Widget AppWidget
     renderLogStream _ ls =
-        txt . fromMaybe "<unnamed>" $ (ls ^. lsLogStreamName)
+        txt . fromMaybe "<unnamed>" $ (ls ^. logStream_logStreamName)
 
 -- LOG EVENT
 
@@ -269,4 +270,4 @@ renderLogEventList :: Bool -> LogEventList -> Widget AppWidget
 renderLogEventList = renderList renderLogEvent
   where
     renderLogEvent :: Bool -> FilteredLogEvent -> Widget AppWidget
-    renderLogEvent _ fle = txt . fromMaybe "<no-content>" $ fle ^. fleMessage
+    renderLogEvent _ fle = txt . fromMaybe "<no-content>" $ fle ^. filteredLogEvent_message

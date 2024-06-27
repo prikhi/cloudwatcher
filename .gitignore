@@ -1,2 +1,5 @@
 cloudwatcher.cabal
 .stack-work/
+/.envrc.local
+/.direnv/
+/result
